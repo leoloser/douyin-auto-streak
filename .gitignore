@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+douyin_failure_*.png
+run_douyin_keep_streak*.bat
+.DS_Store
