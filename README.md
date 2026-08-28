@@ -5,6 +5,7 @@
 ## 你要改的地方
 
 - `douyin_keep_streak.py` 顶部的 `TARGET_FRIENDS`，这里填写聊天列表能搜到的昵称
+- 或复制 `config.example.json` 为 `config.local.json`，在本地私有配置里填写好友名单
 - `MESSAGE_TO_SEND`
 - `SKIP_IF_TODAY_ALREADY_ACTIVE`
 - `CLEAN_STALE_AUTOMATION_EDGE_ON_START`
@@ -45,7 +46,7 @@ launch_douyin_keep_streak.py
 - 默认会先检测今天是否已经有聊天消息/视频活动；如果有，就跳过该好友，避免重复发送
 - 默认每次启动前会清理程序自己残留的旧自动化 Edge，避免同时打开两个自动化 Edge
 - 默认在本次任务结束前，只关闭脚本本次启动的自动化 Edge，不关闭你手动打开的其他 Edge
-- 公开仓库里不包含你的真实好友名单，请在本地 `TARGET_FRIENDS` 里自行填写
+- 公开仓库里不包含真实好友名单，请在本地 `config.local.json` 或 `TARGET_FRIENDS` 里自行填写
 - 如果页面结构更新，可能需要微调选择器
 - 想真正接管“当前正在运行”的 Edge，请先用远程调试端口启动它，然后保持 `REMOTE_DEBUGGING_PORT = 9222`
 

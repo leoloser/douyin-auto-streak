@@ -1,0 +1,12 @@
+{
+  "target_friends": [
+    {
+      "search": "好友昵称",
+      "confirm": "好友昵称"
+    }
+  ],
+  "message_to_send": "1",
+  "skip_if_today_already_active": true,
+  "clean_stale_automation_edge_on_start": true,
+  "close_started_edge_on_exit": true
+}

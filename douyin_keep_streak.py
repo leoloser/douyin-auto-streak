@@ -18,6 +18,7 @@ Important:
 from __future__ import annotations
 
 import logging
+import json
 import os
 import random
 import re
@@ -46,6 +47,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 # 需要续火花的好友昵称。
 # 公开仓库里不放你的真实好友列表；请在本地自行填写。
 TARGET_FRIENDS = []
+
+# 本地私有配置文件。这个文件不会提交到 GitHub，用来保存你的真实好友名单。
+LOCAL_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.local.json")
 
 # 发送的内容：默认只发一个“1”，用于维持聊天火花。
 MESSAGE_TO_SEND = "1"
@@ -144,6 +148,7 @@ log = logging.getLogger("douyin-keep-streak")
 
 STARTED_EDGE_PID: Optional[int] = None
 STARTED_EDGE_PROFILE_PIDS: set[int] = set()
+LOCAL_CONFIG_LOADED = False
 
 
 @dataclass
@@ -169,6 +174,35 @@ def _normalize_target(entry: Any) -> TargetFriend:
     if not search or not confirm:
         raise ValueError(f"好友配置无效：{entry!r}")
     return TargetFriend(search=search, confirm=confirm)
+
+
+def _load_local_config_once() -> None:
+    global LOCAL_CONFIG_LOADED
+    global TARGET_FRIENDS, MESSAGE_TO_SEND, SKIP_IF_TODAY_ALREADY_ACTIVE
+    global CLEAN_STALE_AUTOMATION_EDGE_ON_START, CLOSE_STARTED_EDGE_ON_EXIT
+
+    if LOCAL_CONFIG_LOADED:
+        return
+    LOCAL_CONFIG_LOADED = True
+
+    if not os.path.exists(LOCAL_CONFIG_PATH):
+        return
+
+    with open(LOCAL_CONFIG_PATH, "r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    if "target_friends" in config:
+        TARGET_FRIENDS = config["target_friends"]
+    if "message_to_send" in config:
+        MESSAGE_TO_SEND = str(config["message_to_send"])
+    if "skip_if_today_already_active" in config:
+        SKIP_IF_TODAY_ALREADY_ACTIVE = bool(config["skip_if_today_already_active"])
+    if "clean_stale_automation_edge_on_start" in config:
+        CLEAN_STALE_AUTOMATION_EDGE_ON_START = bool(config["clean_stale_automation_edge_on_start"])
+    if "close_started_edge_on_exit" in config:
+        CLOSE_STARTED_EDGE_ON_EXIT = bool(config["close_started_edge_on_exit"])
+
+    log.info("已加载本地私有配置：%s", LOCAL_CONFIG_PATH)
 
 
 def _sleep_random(min_sec: float, max_sec: float) -> None:
@@ -1511,6 +1545,7 @@ def _open_chat_for_friend(driver: webdriver.Edge, target: TargetFriend) -> bool:
 
 
 def run_once() -> list[TargetResult]:
+    _load_local_config_once()
     driver = _build_driver()
     results: list[TargetResult] = []
     try:
