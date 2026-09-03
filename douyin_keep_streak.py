@@ -1164,9 +1164,6 @@ def _text_indicates_today_activity(text: str) -> bool:
     if not compact:
         return False
 
-    if any(token in compact for token in ("刚刚", "秒前", "分钟前", "今天")):
-        return True
-
     today = datetime.now()
     today_tokens = {
         today.strftime("%Y-%m-%d"),
@@ -1175,13 +1172,20 @@ def _text_indicates_today_activity(text: str) -> bool:
         f"{today.month}/{today.day}",
         f"{today.month}月{today.day}日",
     }
+
+    # 左侧列表可能同时包含时间和消息预览；旧日期优先，避免把正文里的“刚刚”等字样误认为今天。
+    if any(token in compact for token in ("昨天", "前天", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天")):
+        return False
+
+    date_matches = re.findall(r"\b\d{1,2}[/-]\d{1,2}\b|\d{1,2}月\d{1,2}日", compact)
+    if date_matches and not any(token and token in compact for token in today_tokens):
+        return False
+
     if any(token and token in compact for token in today_tokens):
         return True
 
-    if any(token in compact for token in ("昨天", "前天", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天")):
-        return False
-    if re.search(r"\b\d{1,2}[/-]\d{1,2}\b|\d{1,2}月\d{1,2}日", compact):
-        return False
+    if any(token in compact for token in ("刚刚", "秒前", "分钟前", "今天")):
+        return True
 
     return bool(re.search(r"(^|\s)(?:[01]?\d|2[0-3]):[0-5]\d($|\s)", compact))
 
@@ -1381,11 +1385,14 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
     };
     const timeOnlyPattern = /^(?:[01]?\\d|2[0-3]):[0-5]\\d$/;
     const oldDatePattern = /(昨天|前天|周[一二三四五六日天]|星期[一二三四五六日天]|\\d{4}[年\\-/\\. ]\\d{1,2}[月\\-/\\. ]\\d{1,2}|\\d{1,2}[\\-/]\\d{1,2}|\\d{1,2}月\\d{1,2}日)/;
-    const explicitTodayPattern = /(今天|刚刚|分钟前|秒前)/;
-    const currentDatePattern = new RegExp(todayTokens
+    const todayMarkerPattern = /^(?:刚刚|\\d+\\s*(?:分钟前|秒前)|今天(?:\\s*(?:[01]?\\d|2[0-3]):[0-5]\\d)?)$/;
+    const escapedTodayTokens = todayTokens
       .filter(Boolean)
       .map((token) => token.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'))
-      .join('|'));
+      .join('|');
+    const currentDatePattern = escapedTodayTokens
+      ? new RegExp(`^(?:${escapedTodayTokens})(?:\\s+(?:[01]?\\d|2[0-3]):[0-5]\\d)?$`)
+      : null;
 
     const textNodes = Array.from(document.querySelectorAll('div,span,p,time'))
       .filter((el) => visible(el))
@@ -1411,15 +1418,17 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
     let segment = 'unknown';
     for (const item of textNodes) {
       const text = item.text;
-      if (explicitTodayPattern.test(text)) {
-        return { ok: true, reason: `检测到今日标记：${text}` };
-      }
-      if (currentDatePattern.source !== '(?:)' && currentDatePattern.test(text)) {
-        return { ok: true, reason: `检测到今天日期：${text}` };
-      }
       if (oldDatePattern.test(text)) {
         segment = 'old';
         continue;
+      }
+      if (todayMarkerPattern.test(text)) {
+        segment = 'today';
+        return { ok: true, reason: `检测到今日标记：${text}` };
+      }
+      if (currentDatePattern && currentDatePattern.test(text)) {
+        segment = 'today';
+        return { ok: true, reason: `检测到今天日期：${text}` };
       }
       if (timeOnlyPattern.test(text) && segment !== 'old') {
         return { ok: true, reason: `检测到今日时间：${text}` };
