@@ -1347,8 +1347,12 @@ def _wait_until_chat_ready(driver: webdriver.Edge) -> None:
     raise TimeoutException("等待登录或聊天页面加载超时")
 
 
-def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool, str]:
-    """Return whether the visible chat history already shows today's activity."""
+def _chat_has_today_activity(
+    driver: webdriver.Edge,
+    message_box,
+    latest_row_indicates_today: bool = False,
+) -> tuple[bool, str]:
+    """Return whether the visible chat history already shows today's outgoing activity."""
     today = datetime.now()
     today_tokens = [
         today.strftime("%Y-%m-%d"),
@@ -1360,6 +1364,7 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
     script = """
     const messageBox = arguments[0];
     const todayTokens = arguments[1] || [];
+    const latestRowIndicatesToday = Boolean(arguments[2]);
     if (!messageBox) return { ok: false, reason: '没有输入框，无法扫描聊天区' };
 
     const boxRect = messageBox.getBoundingClientRect();
@@ -1383,6 +1388,9 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
       const cy = rect.top + rect.height / 2;
       return cx >= leftLimit && cx <= rightLimit && cy >= topLimit && cy <= bottomLimit;
     };
+    const chatWidth = Math.max(1, rightLimit - leftLimit);
+    const chatMid = leftLimit + chatWidth * 0.5;
+    const outgoingLeft = leftLimit + chatWidth * 0.56;
     const timeOnlyPattern = /^(?:[01]?\\d|2[0-3]):[0-5]\\d$/;
     const oldDatePattern = /(昨天|前天|周[一二三四五六日天]|星期[一二三四五六日天]|\\d{4}[年\\-/\\. ]\\d{1,2}[月\\-/\\. ]\\d{1,2}|\\d{1,2}[\\-/]\\d{1,2}|\\d{1,2}月\\d{1,2}日)/;
     const todayMarkerPattern = /^(?:刚刚|\\d+\\s*(?:分钟前|秒前)|今天(?:\\s*(?:[01]?\\d|2[0-3]):[0-5]\\d)?)$/;
@@ -1393,6 +1401,40 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
     const currentDatePattern = escapedTodayTokens
       ? new RegExp(`^(?:${escapedTodayTokens})(?:\\s+(?:[01]?\\d|2[0-3]):[0-5]\\d)?$`)
       : null;
+    const isProbablyTimeLabel = (item) => {
+      const centerX = item.x + item.width / 2;
+      return item.text.length <= 32 &&
+        item.height <= 42 &&
+        item.width <= 280 &&
+        Math.abs(centerX - chatMid) <= chatWidth * 0.34;
+    };
+    const labelKind = (item) => {
+      if (!isProbablyTimeLabel(item)) return null;
+      if (oldDatePattern.test(item.text)) return 'old';
+      if (todayMarkerPattern.test(item.text)) return 'today';
+      if (currentDatePattern && currentDatePattern.test(item.text)) return 'today';
+      if (timeOnlyPattern.test(item.text)) return 'time';
+      return null;
+    };
+    const hasSameTextChild = (el, text) => Array.from(el.children || [])
+      .some((child) => visible(child) && norm(child.innerText || child.textContent || '') === text);
+    const hasMedia = (el) => {
+      if (el.matches && el.matches('img,video,canvas')) return true;
+      return Boolean(el.querySelector && el.querySelector('img,video,canvas'));
+    };
+    const isMessageCandidate = (item) => {
+      if (labelKind(item)) return false;
+      if (item.text && hasSameTextChild(item.element, item.text)) return false;
+      if (!item.text && !item.hasMedia) return false;
+      if (item.text && item.text.length > 180) return false;
+      if (item.width > chatWidth * 0.72 || item.height > 420) return false;
+      if (item.text && /^(搜索|发送消息|发消息)$/.test(item.text)) return false;
+      return true;
+    };
+    const isOutgoingMessage = (item) => {
+      const centerX = item.x + item.width / 2;
+      return item.x >= outgoingLeft || centerX >= leftLimit + chatWidth * 0.68;
+    };
 
     const textNodes = Array.from(document.querySelectorAll('div,span,p,time'))
       .filter((el) => visible(el))
@@ -1405,6 +1447,8 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
           width: rect.width,
           height: rect.height,
           centerY: rect.top + rect.height / 2,
+          hasMedia: false,
+          element: el,
         };
       })
       .filter((item) => item.text && item.text.length <= 80 && inChatArea({
@@ -1415,38 +1459,87 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
       }))
       .sort((a, b) => a.centerY - b.centerY);
 
+    const mediaNodes = Array.from(document.querySelectorAll('img,video,canvas'))
+      .filter((el) => visible(el))
+      .map((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          text: norm(el.alt || el.innerText || el.textContent || ''),
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height,
+          centerY: rect.top + rect.height / 2,
+          hasMedia: true,
+          element: el,
+        };
+      })
+      .filter((item) => item.width >= 54 && item.height >= 54 && inChatArea({
+        left: item.x,
+        top: item.y,
+        width: item.width,
+        height: item.height,
+      }));
+
+    const events = textNodes.concat(mediaNodes)
+      .sort((a, b) => a.centerY - b.centerY || a.x - b.x);
+
     let segment = 'unknown';
-    for (const item of textNodes) {
-      const text = item.text;
-      if (oldDatePattern.test(text)) {
+    let todayIncomingCount = 0;
+    let todayOutgoingCount = 0;
+    let visibleOutgoingCount = 0;
+    let latestMessage = null;
+    for (const item of events) {
+      const kind = labelKind(item);
+      if (kind === 'old') {
         segment = 'old';
         continue;
       }
-      if (todayMarkerPattern.test(text)) {
+      if (kind === 'today' || (kind === 'time' && segment !== 'old')) {
         segment = 'today';
-        return { ok: true, reason: `检测到今日标记：${text}` };
+        continue;
       }
-      if (currentDatePattern && currentDatePattern.test(text)) {
-        segment = 'today';
-        return { ok: true, reason: `检测到今天日期：${text}` };
+      if (!isMessageCandidate(item)) {
+        continue;
       }
-      if (timeOnlyPattern.test(text) && segment !== 'old') {
-        return { ok: true, reason: `检测到今日时间：${text}` };
+
+      const outgoing = isOutgoingMessage(item);
+      if (outgoing) {
+        visibleOutgoingCount += 1;
+      }
+      latestMessage = { outgoing, text: item.text || '图片/视频' };
+      if (segment === 'today') {
+        if (outgoing) {
+          todayOutgoingCount += 1;
+          const shown = item.text || '图片/视频';
+          return { ok: true, reason: `检测到今天我方消息：${shown}` };
+        }
+        todayIncomingCount += 1;
       }
     }
 
-    const mediaCount = Array.from(document.querySelectorAll('video,canvas,img'))
-      .filter((el) => visible(el))
-      .map((el) => el.getBoundingClientRect())
-      .filter(inChatArea)
-      .length;
+    if (latestRowIndicatesToday && latestMessage) {
+      if (latestMessage.outgoing) {
+        return {
+          ok: true,
+          reason: `左侧列表显示今日最新动态，且最新可见消息在我方右侧：${latestMessage.text}`,
+        };
+      }
+      return {
+        ok: false,
+        reason: `左侧列表显示今日最新动态，但最新可见消息在对方左侧：${latestMessage.text}`,
+      };
+    }
+
     return {
       ok: false,
-      reason: mediaCount ? `聊天区有媒体元素 ${mediaCount} 个，但未识别到今天时间` : '未识别到今天聊天记录',
+      reason: todayIncomingCount
+        ? `检测到今天对方消息 ${todayIncomingCount} 条，但未检测到今天我方消息`
+        : `未检测到今天我方消息（可见我方消息 ${visibleOutgoingCount} 条）`,
     };
     """
     try:
-        result = driver.execute_script(script, message_box, today_tokens)
+        result = driver.execute_script(script, message_box, today_tokens, latest_row_indicates_today)
     except WebDriverException as exc:
         return False, f"今日检测失败：{exc.msg.splitlines()[0]}"
 
@@ -1457,6 +1550,7 @@ def _chat_has_today_activity(driver: webdriver.Edge, message_box) -> tuple[bool,
 
 def _open_chat_for_friend(driver: webdriver.Edge, target: TargetFriend) -> bool:
     log.info("正在处理 %s（搜索：%s）", target.confirm, target.search)
+    left_active = False
 
     try:
         driver.get(DOUYIN_MESSAGE_URL)
@@ -1465,8 +1559,11 @@ def _open_chat_for_friend(driver: webdriver.Edge, target: TargetFriend) -> bool:
         if SKIP_IF_TODAY_ALREADY_ACTIVE:
             left_active, left_reason = _left_list_shows_today_activity(driver, target.confirm)
             if left_active:
-                log.info("左侧列表显示今日已续过，跳过发送：%s（%s）", target.confirm, left_reason)
-                return True
+                log.info(
+                    "左侧列表显示今日有聊天动态，仍打开聊天框确认是否为我方发送：%s（%s）",
+                    target.confirm,
+                    left_reason,
+                )
         search_box.click()
         search_box.send_keys(Keys.CONTROL, "a")
         search_box.send_keys(Keys.BACKSPACE)
@@ -1524,7 +1621,11 @@ def _open_chat_for_friend(driver: webdriver.Edge, target: TargetFriend) -> bool:
             raise TimeoutException("未找到消息输入框")
 
         if SKIP_IF_TODAY_ALREADY_ACTIVE:
-            already_active, reason = _chat_has_today_activity(driver, message_box)
+            already_active, reason = _chat_has_today_activity(
+                driver,
+                message_box,
+                latest_row_indicates_today=left_active,
+            )
             if already_active:
                 log.info("今日已续过，跳过发送：%s（%s）", target.confirm, reason)
                 return True
