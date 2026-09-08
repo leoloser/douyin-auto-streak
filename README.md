@@ -2,6 +2,8 @@
 
 一个用于抖音网页版私信的自动化脚本，面向 Microsoft Edge。
 
+维护记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 你要改的地方
 
 - `douyin_keep_streak.py` 顶部的 `TARGET_FRIENDS`，这里填写聊天列表能搜到的昵称
