@@ -1405,7 +1405,6 @@ def _chat_has_today_activity(
       const centerX = item.x + item.width / 2;
       return item.text.length <= 32 &&
         item.height <= 42 &&
-        item.width <= 280 &&
         Math.abs(centerX - chatMid) <= chatWidth * 0.34;
     };
     const labelKind = (item) => {
@@ -1415,6 +1414,11 @@ def _chat_has_today_activity(
       if (currentDatePattern && currentDatePattern.test(item.text)) return 'today';
       if (timeOnlyPattern.test(item.text)) return 'time';
       return null;
+    };
+    const parseClockMinutes = (text) => {
+      const match = String(text || '').match(/(?:^|\\s)([01]?\\d|2[0-3]):([0-5]\\d)(?:\\s|$)/);
+      if (!match) return null;
+      return Number(match[1]) * 60 + Number(match[2]);
     };
     const hasSameTextChild = (el, text) => Array.from(el.children || [])
       .some((child) => visible(child) && norm(child.innerText || child.textContent || '') === text);
@@ -1489,14 +1493,45 @@ def _chat_has_today_activity(
     let todayOutgoingCount = 0;
     let visibleOutgoingCount = 0;
     let latestMessage = null;
+    let sawOldDateLabel = false;
+    let lastLabelMinutes = null;
     for (const item of events) {
       const kind = labelKind(item);
       if (kind === 'old') {
         segment = 'old';
+        sawOldDateLabel = true;
+        const minutes = parseClockMinutes(item.text);
+        if (minutes !== null) {
+          lastLabelMinutes = minutes;
+        }
         continue;
       }
-      if (kind === 'today' || (kind === 'time' && segment !== 'old')) {
+      if (kind === 'today') {
         segment = 'today';
+        const minutes = parseClockMinutes(item.text);
+        if (minutes !== null) {
+          lastLabelMinutes = minutes;
+        }
+        continue;
+      }
+      if (kind === 'time') {
+        const minutes = parseClockMinutes(item.text);
+        if (segment === 'old') {
+          const rolledPastMidnight = sawOldDateLabel &&
+            lastLabelMinutes !== null &&
+            minutes !== null &&
+            minutes < lastLabelMinutes;
+          if (!rolledPastMidnight) {
+            if (minutes !== null) {
+              lastLabelMinutes = minutes;
+            }
+            continue;
+          }
+        }
+        segment = 'today';
+        if (minutes !== null) {
+          lastLabelMinutes = minutes;
+        }
         continue;
       }
       if (!isMessageCandidate(item)) {
