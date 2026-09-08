@@ -22,6 +22,8 @@ python douyin_keep_streak.py
 
 更推荐双击桌面快捷方式，桌面快捷方式会运行 `launch_douyin_keep_streak.py` 并保留日志窗口。
 
+手动双击默认会在当前桌面运行，方便你人工观察和调试。
+
 只测试“搜索好友并打开聊天框”、不发送表情：
 
 ```powershell
@@ -32,7 +34,16 @@ python douyin_keep_streak.py
 如果要放进 Windows 任务计划程序，程序/脚本指向你的 Python 可执行文件，参数填写：
 
 ```text
-launch_douyin_keep_streak.py
+"launch_douyin_keep_streak.py" --isolated-desktop
+```
+
+`--isolated-desktop` 会在任务计划自动触发时创建一个临时 Windows 虚拟桌面，把日志窗口和自动化 Edge 移到那个桌面运行，并在结束时关闭这个临时桌面。这样可以尽量减少对当前桌面工作的干扰。
+
+也可以临时用环境变量开启隔离桌面：
+
+```powershell
+$env:DOUYIN_ISOLATED_DESKTOP='1'
+python launch_douyin_keep_streak.py
 ```
 
 ## 说明
@@ -46,6 +57,7 @@ launch_douyin_keep_streak.py
 - 默认会先检测今天是否已经有聊天消息/视频活动；如果有，就跳过该好友，避免重复发送
 - 默认每次启动前会清理程序自己残留的旧自动化 Edge，避免同时打开两个自动化 Edge
 - 默认在本次任务结束前，只关闭脚本本次启动的自动化 Edge，不关闭你手动打开的其他 Edge
+- 定时任务建议使用 `launch_douyin_keep_streak.py --isolated-desktop`，手动测试时仍直接运行 `launch_douyin_keep_streak.py`
 - 公开仓库里不包含真实好友名单，请在本地 `config.local.json` 或 `TARGET_FRIENDS` 里自行填写
 - 如果页面结构更新，可能需要微调选择器
 - 想真正接管“当前正在运行”的 Edge，请先用远程调试端口启动它，然后保持 `REMOTE_DEBUGGING_PORT = 9222`
