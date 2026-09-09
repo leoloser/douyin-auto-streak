@@ -6,7 +6,32 @@
     }
   ],
   "message_to_send": "1",
+  "message_candidates": [],
   "skip_if_today_already_active": true,
+  "dry_run_open_chat_only": false,
   "clean_stale_automation_edge_on_start": true,
-  "close_started_edge_on_exit": true
+  "close_started_edge_on_exit": true,
+  "daily_run_at": null,
+  "edge_profile_directory": "Default",
+  "remote_debugging_port": 9222,
+  "auto_start_edge_with_debugging": true,
+  "auto_close_edge_to_enable_debugging": false,
+  "save_screenshot_on_failure": true,
+  "log_dir": "logs",
+  "failure_screenshot_dir": "screenshots",
+  "run_report_path": "last_run_summary.json",
+  "timing": {
+    "open_page_wait_sec": 4,
+    "after_search_wait_sec": 2,
+    "chat_open_wait_sec": 6,
+    "message_box_wait_sec": 25,
+    "between_friends_min_sec": 3,
+    "between_friends_max_sec": 6,
+    "after_send_wait_sec": 1.5,
+    "page_load_timeout_sec": 20,
+    "edge_debug_start_wait_sec": 8,
+    "edge_restart_wait_sec": 3,
+    "login_wait_timeout_sec": 300,
+    "message_button_verify_wait_sec": 6
+  }
 }

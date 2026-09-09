@@ -54,6 +54,9 @@ LOCAL_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "co
 # 发送的内容：默认只发一个“1”，用于维持聊天火花。
 MESSAGE_TO_SEND = "1"
 
+# 可选随机消息池。本地配置里填写 message_candidates 后，每个好友会随机选一条发送。
+MESSAGE_CANDIDATES: list[str] = []
+
 # 打开聊天框后，如果检测到今天已经有聊天消息/视频活动，则跳过发送。
 # 说明：抖音网页端没有稳定公开接口，这里按聊天区域里的日期/时间文字做启发式判断。
 SKIP_IF_TODAY_ALREADY_ACTIVE = True
@@ -118,6 +121,12 @@ MESSAGE_BUTTON_VERIFY_WAIT_SEC = 6
 # 点击失败时保存页面截图，方便看清脚本当时点到了哪里。
 SAVE_SCREENSHOT_ON_FAILURE = True
 
+# 无人值守运行时的排查产物。
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(PROJECT_DIR, "logs")
+FAILURE_SCREENSHOT_DIR = os.path.join(PROJECT_DIR, "screenshots")
+RUN_REPORT_PATH = os.path.join(PROJECT_DIR, "last_run_summary.json")
+
 # 页面上的候选元素选择器。Douyin 前端会变，保留成可调配置更稳妥。
 SEARCH_INPUT_SELECTORS = [
     'input[placeholder*="搜索"]',
@@ -149,6 +158,22 @@ log = logging.getLogger("douyin-keep-streak")
 STARTED_EDGE_PID: Optional[int] = None
 STARTED_EDGE_PROFILE_PIDS: set[int] = set()
 LOCAL_CONFIG_LOADED = False
+FILE_LOGGING_CONFIGURED = False
+
+TIMING_CONFIG_KEYS = {
+    "open_page_wait_sec": ("OPEN_PAGE_WAIT_SEC", float),
+    "after_search_wait_sec": ("AFTER_SEARCH_WAIT_SEC", float),
+    "chat_open_wait_sec": ("CHAT_OPEN_WAIT_SEC", int),
+    "message_box_wait_sec": ("MESSAGE_BOX_WAIT_SEC", int),
+    "between_friends_min_sec": ("BETWEEN_FRIENDS_MIN_SEC", float),
+    "between_friends_max_sec": ("BETWEEN_FRIENDS_MAX_SEC", float),
+    "after_send_wait_sec": ("AFTER_SEND_WAIT_SEC", float),
+    "page_load_timeout_sec": ("PAGE_LOAD_TIMEOUT_SEC", int),
+    "edge_debug_start_wait_sec": ("EDGE_DEBUG_START_WAIT_SEC", float),
+    "edge_restart_wait_sec": ("EDGE_RESTART_WAIT_SEC", float),
+    "login_wait_timeout_sec": ("LOGIN_WAIT_TIMEOUT_SEC", int),
+    "message_button_verify_wait_sec": ("MESSAGE_BUTTON_VERIFY_WAIT_SEC", int),
+}
 
 
 @dataclass
@@ -176,16 +201,121 @@ def _normalize_target(entry: Any) -> TargetFriend:
     return TargetFriend(search=search, confirm=confirm)
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    if value in (None, "", False):
+        return None
+    return int(value)
+
+
+def _path_from_config(value: Any) -> str:
+    path = os.path.expandvars(str(value).strip())
+    if not os.path.isabs(path):
+        path = os.path.join(PROJECT_DIR, path)
+    return os.path.abspath(path)
+
+
+def _configure_file_logging_once() -> None:
+    global FILE_LOGGING_CONFIGURED
+
+    if FILE_LOGGING_CONFIGURED:
+        return
+    FILE_LOGGING_CONFIGURED = True
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        log_path = os.path.join(LOG_DIR, f"douyin_keep_streak_{datetime.now():%Y%m%d}.log")
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        logging.getLogger().addHandler(handler)
+        log.info("运行日志写入：%s", log_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("启用文件日志失败：%s", exc)
+
+
+def _configured_targets() -> list[TargetFriend]:
+    targets = [_normalize_target(entry) for entry in TARGET_FRIENDS]
+    if not targets:
+        raise ValueError(
+            "未配置 target_friends。请复制 config.example.json 为 config.local.json，"
+            "并填写要续火花的好友昵称。"
+        )
+
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for target in targets:
+        key = target.confirm.casefold()
+        if key in seen:
+            duplicates.add(target.confirm)
+        seen.add(key)
+    if duplicates:
+        log.warning("好友配置里有重复确认昵称，会按列表顺序重复处理：%s", sorted(duplicates))
+
+    return targets
+
+
+def _message_for_target(_target: TargetFriend) -> str:
+    candidates = [str(item) for item in MESSAGE_CANDIDATES if str(item)]
+    if candidates:
+        return random.choice(candidates)
+    return MESSAGE_TO_SEND
+
+
+def _write_run_report(
+    results: list[TargetResult],
+    started_at: datetime,
+    finished_at: datetime,
+    error: Optional[str] = None,
+) -> None:
+    try:
+        report_dir = os.path.dirname(os.path.abspath(RUN_REPORT_PATH))
+        if report_dir:
+            os.makedirs(report_dir, exist_ok=True)
+        ok_count = sum(1 for item in results if item.ok)
+        payload = {
+            "started_at": started_at.isoformat(timespec="seconds"),
+            "finished_at": finished_at.isoformat(timespec="seconds"),
+            "duration_sec": round((finished_at - started_at).total_seconds(), 2),
+            "ok": error is None and ok_count == len(results),
+            "success_count": ok_count,
+            "failed_count": len(results) - ok_count,
+            "error": error,
+            "results": [
+                {"friend": item.friend, "ok": item.ok, "detail": item.detail}
+                for item in results
+            ],
+        }
+        with open(RUN_REPORT_PATH, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+        log.info("运行摘要写入：%s", RUN_REPORT_PATH)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("写入运行摘要失败：%s", exc)
+
+
 def _load_local_config_once() -> None:
     global LOCAL_CONFIG_LOADED
     global TARGET_FRIENDS, MESSAGE_TO_SEND, SKIP_IF_TODAY_ALREADY_ACTIVE
     global CLEAN_STALE_AUTOMATION_EDGE_ON_START, CLOSE_STARTED_EDGE_ON_EXIT
+    global MESSAGE_CANDIDATES, DRY_RUN_OPEN_CHAT_ONLY, DAILY_RUN_AT, EDGE_PROFILE_DIRECTORY
+    global REMOTE_DEBUGGING_PORT, AUTO_START_EDGE_WITH_DEBUGGING, AUTO_CLOSE_EDGE_TO_ENABLE_DEBUGGING
+    global SAVE_SCREENSHOT_ON_FAILURE, LOG_DIR, FAILURE_SCREENSHOT_DIR, RUN_REPORT_PATH
 
     if LOCAL_CONFIG_LOADED:
         return
     LOCAL_CONFIG_LOADED = True
 
     if not os.path.exists(LOCAL_CONFIG_PATH):
+        _configure_file_logging_once()
         return
 
     with open(LOCAL_CONFIG_PATH, "r", encoding="utf-8") as file:
@@ -195,13 +325,47 @@ def _load_local_config_once() -> None:
         TARGET_FRIENDS = config["target_friends"]
     if "message_to_send" in config:
         MESSAGE_TO_SEND = str(config["message_to_send"])
+    if "message_candidates" in config:
+        MESSAGE_CANDIDATES = [str(item) for item in config["message_candidates"] if str(item)]
     if "skip_if_today_already_active" in config:
-        SKIP_IF_TODAY_ALREADY_ACTIVE = bool(config["skip_if_today_already_active"])
+        SKIP_IF_TODAY_ALREADY_ACTIVE = _truthy(config["skip_if_today_already_active"])
+    if "dry_run_open_chat_only" in config:
+        DRY_RUN_OPEN_CHAT_ONLY = _truthy(config["dry_run_open_chat_only"])
     if "clean_stale_automation_edge_on_start" in config:
-        CLEAN_STALE_AUTOMATION_EDGE_ON_START = bool(config["clean_stale_automation_edge_on_start"])
+        CLEAN_STALE_AUTOMATION_EDGE_ON_START = _truthy(
+            config["clean_stale_automation_edge_on_start"]
+        )
     if "close_started_edge_on_exit" in config:
-        CLOSE_STARTED_EDGE_ON_EXIT = bool(config["close_started_edge_on_exit"])
+        CLOSE_STARTED_EDGE_ON_EXIT = _truthy(config["close_started_edge_on_exit"])
+    if "daily_run_at" in config:
+        DAILY_RUN_AT = str(config["daily_run_at"]).strip() or None
+    if "edge_profile_directory" in config:
+        EDGE_PROFILE_DIRECTORY = str(config["edge_profile_directory"]).strip() or "Default"
+    if "remote_debugging_port" in config:
+        REMOTE_DEBUGGING_PORT = _optional_int(config["remote_debugging_port"])
+    if "auto_start_edge_with_debugging" in config:
+        AUTO_START_EDGE_WITH_DEBUGGING = _truthy(config["auto_start_edge_with_debugging"])
+    if "auto_close_edge_to_enable_debugging" in config:
+        AUTO_CLOSE_EDGE_TO_ENABLE_DEBUGGING = _truthy(
+            config["auto_close_edge_to_enable_debugging"]
+        )
+    if "save_screenshot_on_failure" in config:
+        SAVE_SCREENSHOT_ON_FAILURE = _truthy(config["save_screenshot_on_failure"])
+    if "log_dir" in config:
+        LOG_DIR = _path_from_config(config["log_dir"])
+    if "failure_screenshot_dir" in config:
+        FAILURE_SCREENSHOT_DIR = _path_from_config(config["failure_screenshot_dir"])
+    if "run_report_path" in config:
+        RUN_REPORT_PATH = _path_from_config(config["run_report_path"])
 
+    timing_config = config.get("timing", {})
+    if isinstance(timing_config, dict):
+        for key, (global_name, caster) in TIMING_CONFIG_KEYS.items():
+            if key not in timing_config:
+                continue
+            globals()[global_name] = caster(timing_config[key])
+
+    _configure_file_logging_once()
     log.info("已加载本地私有配置：%s", LOCAL_CONFIG_PATH)
 
 
@@ -647,8 +811,13 @@ def _save_failure_screenshot(driver: webdriver.Edge, target_name: str, reason: s
         return
     try:
         safe_name = "".join(ch if ch.isalnum() else "_" for ch in target_name).strip("_")
+        if not safe_name:
+            safe_name = "unknown"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.abspath(f"douyin_failure_{safe_name}_{timestamp}.png")
+        os.makedirs(FAILURE_SCREENSHOT_DIR, exist_ok=True)
+        path = os.path.abspath(
+            os.path.join(FAILURE_SCREENSHOT_DIR, f"douyin_failure_{safe_name}_{timestamp}.png")
+        )
         driver.save_screenshot(path)
         log.warning("%s，已保存截图：%s", reason, path)
     except Exception:  # noqa: BLE001
@@ -1670,7 +1839,8 @@ def _open_chat_for_friend(driver: webdriver.Edge, target: TargetFriend) -> bool:
             log.info("自测模式：已打开 %s 的聊天框，不发送表情", target.confirm)
             return True
 
-        if not _insert_message_text(driver, message_box, MESSAGE_TO_SEND):
+        message_text = _message_for_target(target)
+        if not _insert_message_text(driver, message_box, message_text):
             raise RuntimeError("未能把消息内容插入消息输入框")
         time.sleep(0.5)
 
@@ -1691,20 +1861,26 @@ def _open_chat_for_friend(driver: webdriver.Edge, target: TargetFriend) -> bool:
 
 def run_once() -> list[TargetResult]:
     _load_local_config_once()
-    driver = _build_driver()
+    started_at = datetime.now()
+    driver: Optional[webdriver.Edge] = None
     results: list[TargetResult] = []
+    error_detail: Optional[str] = None
     try:
+        targets = _configured_targets()
+        driver = _build_driver()
         _open_message_page(driver)
-        for entry in TARGET_FRIENDS:
-            friend = _normalize_target(entry)
+        for friend in targets:
             ok = _open_chat_for_friend(driver, friend)
             results.append(
                 TargetResult(friend=friend.confirm, ok=ok, detail="ok" if ok else "failed")
             )
             _sleep_random(BETWEEN_FRIENDS_MIN_SEC, BETWEEN_FRIENDS_MAX_SEC)
         return results
+    except Exception as exc:
+        error_detail = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
-        if STARTED_EDGE_PID:
+        if driver and STARTED_EDGE_PID:
             try:
                 _close_started_edge_browser(driver)
             except Exception:  # noqa: BLE001
@@ -1714,6 +1890,7 @@ def run_once() -> list[TargetResult]:
             except Exception:  # noqa: BLE001
                 pass
         _close_started_edge_process()
+        _write_run_report(results, started_at, datetime.now(), error_detail)
 
 
 def _next_run_time(hhmm: str) -> datetime:

@@ -2,17 +2,23 @@
 
 本文件记录项目的主要功能变更、问题修复和维护事项。公开日志只描述通用行为，不记录真实好友昵称、截图、Cookie、浏览器配置目录里的私有数据或 `config.local.json` 内容。
 
-## 2026-09-08
+## 2026-09-09
 
 ### 新增
 
+- 对照 GitHub 开源同类项目补充无人值守运行能力：
+  - `config.local.json` 支持 `message_candidates` 随机消息池。
+  - 支持通过本地配置调整日志目录、失败截图目录、运行摘要路径和等待时间。
+  - 每次运行结束写入 `last_run_summary.json`，便于任务计划场景排查。
+  - 失败截图默认收拢到 `screenshots/`，运行日志默认写入 `logs/`。
 - 定时任务支持隔离桌面运行：
-  - `launch_douyin_keep_streak.py --isolated-desktop` 会创建临时 Windows 虚拟桌面。
-  - 自动化 Edge 和日志窗口会被移动到临时桌面，减少对当前桌面工作的干扰。
+  - `launch_douyin_keep_streak.py --desktop-mode isolated` 会创建临时 Windows 虚拟桌面。
+  - 启动器会在临时桌面里再起一个脚本进程，让脚本本体和自动化 Edge 一起在那边运行。
   - 脚本结束后会关闭本次创建的临时虚拟桌面。
-  - 手动双击默认仍在当前桌面运行，便于人工测试。
+  - `launch_douyin_keep_streak.py --desktop-mode current` 明确保持在当前桌面运行，便于人工测试。
+  - 兼容旧参数 `--isolated-desktop`。
 - 增加可选依赖 `pyvda`，用于 Windows 虚拟桌面控制。
-- README 补充隔离桌面的使用方式和任务计划参数。
+- README 补充隔离桌面、任务计划参数、随机消息池和运行排查产物说明。
 
 ### 修复
 
