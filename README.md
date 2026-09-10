@@ -53,6 +53,17 @@ python douyin_keep_streak.py
 launch_douyin_keep_streak.py --desktop-mode isolated
 ```
 
+推荐直接在 PowerShell 里运行仓库自带的配置脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup_scheduled_task.ps1 `
+  -PythonPath "C:\ProgramData\anaconda3\python.exe"
+```
+
+它会按项目当前所在目录创建或更新“抖音续火花脚本”任务，并设置每天
+`01:00`、`14:00`、`23:00` 执行。以后移动项目目录后，在新目录重新运行一次即可，
+避免任务计划仍指向旧路径。
+
 `--desktop-mode isolated` 会在自动触发时创建一个临时 Windows 虚拟桌面，把日志窗口和自动化 Edge 放到那个桌面运行，并在结束时关闭这个临时桌面。脚本会尽量不把你当前桌面切走。
 这个模式下，启动器会先在临时桌面里再起一个脚本进程，所以脚本本体和 Edge 会一起待在新桌面里跑。
 由于 Windows 虚拟桌面对新窗口归属的限制，启动瞬间可能会短暂切到临时桌面，随后会自动切回原桌面。
@@ -64,6 +75,12 @@ python launch_douyin_keep_streak.py --desktop-mode current
 ```
 
 `--desktop-mode current` 会明确保持在当前桌面运行，适合你人工观察和调试。
+
+只验证定时启动和页面操作、不实际发送消息：
+
+```powershell
+python launch_douyin_keep_streak.py --desktop-mode isolated --dry-run
+```
 
 也可以临时用环境变量切换：
 

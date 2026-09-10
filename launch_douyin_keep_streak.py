@@ -70,6 +70,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只打开并检查聊天，不发送消息。",
+    )
     return parser.parse_args()
 
 
@@ -206,6 +211,9 @@ def _visible_window_handles() -> set[int]:
 
 def main() -> int:
     args = _parse_args()
+
+    if args.dry_run:
+        os.environ["DOUYIN_DRY_RUN"] = "1"
 
     if args.desktop_worker:
         with _worker_desktop_cleanup():
