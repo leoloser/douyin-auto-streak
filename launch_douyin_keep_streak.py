@@ -6,6 +6,7 @@ import os
 import runpy
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -15,6 +16,8 @@ KEEP_WINDOW_OPEN_ON_EXIT = False
 KEEP_WINDOW_OPEN_ON_ERROR = True
 ISOLATED_DESKTOP_NAME = "抖音续火花"
 ISOLATED_DESKTOP_PROCESS_WINDOW_WAIT_SEC = 3
+ISOLATED_DESKTOP_WINDOW_SCAN_INTERVAL_SEC = 0.5
+EDGE_PROFILE_DIR_NAME = "DouyinKeepStreakEdgeProfile"
 DESKTOP_MODE_CURRENT = "current"
 DESKTOP_MODE_ISOLATED = "isolated"
 ENV_DESKTOP_WORKER = "DOUYIN_DESKTOP_WORKER"
@@ -30,6 +33,8 @@ class IsolatedDesktopCleanup:
         self._isolated_desktop_id = isolated_desktop_id
         self._original_desktop = None
         self._isolated_desktop = None
+        self._console_hwnd = 0
+        self._moved_edge_hwnds: set[int] = set()
 
     def __enter__(self) -> "IsolatedDesktopCleanup":
         from comtypes import GUID
@@ -37,6 +42,8 @@ class IsolatedDesktopCleanup:
 
         self._original_desktop = VirtualDesktop(desktop_id=GUID(self._original_desktop_id))
         self._isolated_desktop = VirtualDesktop(desktop_id=GUID(self._isolated_desktop_id))
+        self._console_hwnd = int(ctypes.windll.kernel32.GetConsoleWindow())
+        self.keep_automation_windows_on_isolated_desktop()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
@@ -51,6 +58,33 @@ class IsolatedDesktopCleanup:
             print(f"已关闭临时虚拟桌面：{ISOLATED_DESKTOP_NAME}")
         except Exception as exc:  # noqa: BLE001
             print(f"关闭临时虚拟桌面失败，请稍后用任务视图手动关闭：{exc}")
+
+    def keep_automation_windows_on_isolated_desktop(self) -> None:
+        if not self._isolated_desktop:
+            return
+
+        from pyvda import AppView
+
+        if self._console_hwnd:
+            self._move_window(AppView, self._console_hwnd)
+
+        current_edge_hwnds = set(_automation_edge_window_handles())
+        self._moved_edge_hwnds.intersection_update(current_edge_hwnds)
+        for hwnd in current_edge_hwnds:
+            if not self._move_window(AppView, hwnd):
+                continue
+            if hwnd not in self._moved_edge_hwnds:
+                print("自动化 Edge 已移入临时虚拟桌面。")
+                self._moved_edge_hwnds.add(hwnd)
+
+    def _move_window(self, app_view_class, hwnd: int) -> bool:  # noqa: ANN001
+        try:
+            view = app_view_class(hwnd=hwnd)
+            if not view.is_on_desktop(self._isolated_desktop, include_pinned=False):
+                view.move(self._isolated_desktop)
+            return True
+        except Exception:
+            return False
 
 
 def _parse_args() -> argparse.Namespace:
@@ -123,6 +157,26 @@ def _worker_desktop_cleanup() -> IsolatedDesktopCleanup:
     if not original_id or not isolated_id:
         raise RuntimeError("缺少隔离桌面标识，无法执行清理")
     return IsolatedDesktopCleanup(original_id, isolated_id)
+
+
+def _run_automation_with_desktop_monitor(
+    desktop_cleanup: IsolatedDesktopCleanup,
+) -> int:
+    result: list[int] = []
+
+    def run_script() -> None:
+        result.append(_run_automation_script())
+
+    automation_thread = threading.Thread(
+        target=run_script,
+        name="douyin-automation",
+    )
+    automation_thread.start()
+    while automation_thread.is_alive():
+        desktop_cleanup.keep_automation_windows_on_isolated_desktop()
+        automation_thread.join(timeout=ISOLATED_DESKTOP_WINDOW_SCAN_INTERVAL_SEC)
+    desktop_cleanup.keep_automation_windows_on_isolated_desktop()
+    return result[0] if result else 1
 
 
 def _spawn_worker_in_isolated_desktop() -> int:
@@ -209,6 +263,57 @@ def _visible_window_handles() -> set[int]:
     return handles
 
 
+def _automation_edge_pids() -> set[int]:
+    command = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.Name -eq 'msedge.exe' } | "
+        "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        check=False,
+    )
+    profile_marker = EDGE_PROFILE_DIR_NAME.casefold()
+    pids: set[int] = set()
+    for line in result.stdout.splitlines():
+        if "\t" not in line:
+            continue
+        pid_text, command_line = line.split("\t", 1)
+        if profile_marker not in command_line.casefold():
+            continue
+        try:
+            pids.add(int(pid_text))
+        except ValueError:
+            continue
+    return pids
+
+
+def _automation_edge_window_handles() -> list[int]:
+    edge_pids = _automation_edge_pids()
+    if not edge_pids:
+        return []
+
+    handles: list[int] = []
+    user32 = ctypes.windll.user32
+    enum_proc_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if int(pid.value) in edge_pids:
+            handles.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(enum_proc_type(callback), 0)
+    return handles
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -216,8 +321,8 @@ def main() -> int:
         os.environ["DOUYIN_DRY_RUN"] = "1"
 
     if args.desktop_worker:
-        with _worker_desktop_cleanup():
-            return _run_automation_script()
+        with _worker_desktop_cleanup() as desktop_cleanup:
+            return _run_automation_with_desktop_monitor(desktop_cleanup)
 
     desktop_mode = _resolve_desktop_mode(args)
     if desktop_mode == DESKTOP_MODE_ISOLATED:
