@@ -25,7 +25,7 @@ if (-not $PythonPath) {
 }
 $PythonPath = (Resolve-Path -LiteralPath $PythonPath).ProviderPath
 
-$arguments = "`"$launcherPath`" --desktop-mode isolated"
+$arguments = "`"$launcherPath`""
 $action = New-ScheduledTaskAction `
     -Execute $PythonPath `
     -Argument $arguments `
